@@ -5,7 +5,7 @@ authors = ["Sebastian K <s3bk@protonmail.com>"]
 edition = "2018"
 
 [dependencies]
-pdf = { git = "https://github.com/pdf-rs/pdf", branch="dev" }
+pdf = { git = "https://github.com/pdf-rs/pdf" }
 pdf_encoding = "*"
 byteorder = "*"
 utf16-ext = "*"
