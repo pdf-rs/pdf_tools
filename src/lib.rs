@@ -5,20 +5,23 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 
 use pdf::content::*;
-use pdf::primitive::Primitive;
-use pdf::font::*;
-use pdf::parser::Lexer;
-use pdf::parser::parse_with_lexer;
-use pdf::object::*;
 use pdf::encoding::BaseEncoding;
 use pdf::error::PdfError;
+use pdf::font::*;
+use pdf::object::*;
+use pdf::parser::parse_with_lexer;
+use pdf::parser::Lexer;
+use pdf::primitive::Primitive;
 use pdf_encoding::{self, ForwardMap};
 
 use byteorder::BE;
 use utf16_ext::Utf16ReadExt;
 
 fn utf16be_to_string(mut data: &[u8]) -> String {
-    (&mut data).utf16_chars::<BE>().map(|c| c.unwrap()).collect()
+    (&mut data)
+        .utf16_chars::<BE>()
+        .map(|c| c.unwrap())
+        .collect()
 }
 
 // totally not a steaming pile of hacks
@@ -44,37 +47,50 @@ fn parse_cmap(data: &[u8]) -> HashMap<u16, String> {
                         let unicode = utf16be_to_string(unicode_data.as_bytes());
                         map.insert(cid, unicode);
                     }
-                    _ => break
+                    _ => break,
                 }
-            }
+            },
             b"beginbfrange" => loop {
                 let a = parse_with_lexer(&mut lexer, &NoResolve);
                 let b = parse_with_lexer(&mut lexer, &NoResolve);
                 let c = parse_with_lexer(&mut lexer, &NoResolve);
                 match (a, b, c) {
-                    (Ok(Primitive::String(cid_start_data)), Ok(Primitive::String(cid_end_data)), Ok(Primitive::String(unicode_data))) => {
-                        let cid_start = u16::from_be_bytes(cid_start_data.as_bytes().try_into().unwrap());
-                        let cid_end = u16::from_be_bytes(cid_end_data.as_bytes().try_into().unwrap());
+                    (
+                        Ok(Primitive::String(cid_start_data)),
+                        Ok(Primitive::String(cid_end_data)),
+                        Ok(Primitive::String(unicode_data)),
+                    ) => {
+                        let cid_start =
+                            u16::from_be_bytes(cid_start_data.as_bytes().try_into().unwrap());
+                        let cid_end =
+                            u16::from_be_bytes(cid_end_data.as_bytes().try_into().unwrap());
                         let mut unicode_data = unicode_data.into_bytes();
 
-                        for cid in cid_start ..= cid_end  {
+                        for cid in cid_start..=cid_end {
                             let unicode = utf16be_to_string(&unicode_data);
                             map.insert(cid, unicode);
                             *unicode_data.last_mut().unwrap() += 1;
                         }
                     }
-                    (Ok(Primitive::String(cid_start_data)), Ok(Primitive::String(cid_end_data)), Ok(Primitive::Array(unicode_data_arr))) => {
-                        let cid_start = u16::from_be_bytes(cid_start_data.as_bytes().try_into().unwrap());
-                        let cid_end = u16::from_be_bytes(cid_end_data.as_bytes().try_into().unwrap());
+                    (
+                        Ok(Primitive::String(cid_start_data)),
+                        Ok(Primitive::String(cid_end_data)),
+                        Ok(Primitive::Array(unicode_data_arr)),
+                    ) => {
+                        let cid_start =
+                            u16::from_be_bytes(cid_start_data.as_bytes().try_into().unwrap());
+                        let cid_end =
+                            u16::from_be_bytes(cid_end_data.as_bytes().try_into().unwrap());
 
-                        for (cid, unicode_data) in (cid_start ..= cid_end).zip(unicode_data_arr) {
-                            let unicode = utf16be_to_string(&unicode_data.as_string().unwrap().as_bytes());
+                        for (cid, unicode_data) in (cid_start..=cid_end).zip(unicode_data_arr) {
+                            let unicode =
+                                utf16be_to_string(&unicode_data.as_string().unwrap().as_bytes());
                             map.insert(cid, unicode);
                         }
                     }
-                    _ => break
+                    _ => break,
                 }
-            }
+            },
             b"endcmap" => break,
             _ => {}
         }
@@ -85,19 +101,19 @@ fn parse_cmap(data: &[u8]) -> HashMap<u16, String> {
 
 enum Decoder {
     Map(&'static ForwardMap),
-    Cmap(HashMap<u16, String>)
+    Cmap(HashMap<u16, String>),
 }
 
 struct FontInfo {
     decoder: Decoder,
 }
 struct Cache {
-    fonts: HashMap<String, FontInfo>
+    fonts: HashMap<String, FontInfo>,
 }
 impl Cache {
     fn new() -> Self {
         Cache {
-            fonts: HashMap::new()
+            fonts: HashMap::new(),
         }
     }
     fn add_font(&mut self, name: impl Into<String>, font: RcRef<Font>) {
@@ -116,7 +132,7 @@ impl Cache {
             };
             Decoder::Map(map)
         } else {
-            return
+            return;
         };
 
         self.fonts.insert(name.into(), FontInfo { decoder });
@@ -154,7 +170,7 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
     let resources = page.resources.as_ref().unwrap();
     let mut cache = Cache::new();
     let mut out = String::new();
-    
+
     // make sure all fonts are in the cache, so we can reference them
     for (name, &font) in &resources.fonts {
         cache.add_font(name, resolve.get(font)?);
@@ -169,13 +185,20 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
     let contents = page.contents.as_ref().unwrap();
     let mut font_size = 0.0;
     let mut text_leading = 1.0;
-    let mut text_matrix = Matrix { a: 1.0, b: 0.0, c: 0.0, d: 1.0, e: 0.0, f: 0.0 };
+    let mut text_matrix = Matrix {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 1.0,
+        e: 0.0,
+        f: 0.0,
+    };
 
     for op in &contents.operations {
         match *op {
             Op::GraphicsState { ref name } => {
                 let gs = resources.graphics_states.get(name).unwrap();
-                
+
                 if let Some((font, size)) = gs.font {
                     let font = resolve.get(font)?;
                     current_font = cache.get_font(&font.name);
@@ -187,11 +210,15 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
                 current_font = cache.get_font(name);
                 font_size = size;
             }
-            Op::TextDraw { ref text } => if let Some(font) = current_font {
-                add_string(&text.data, &mut out, font);
+            Op::TextDraw { ref text } => {
+                if let Some(font) = current_font {
+                    add_string(&text.data, &mut out, font);
+                }
             }
-            Op::TextDrawAdjusted { ref array } =>  if let Some(font) = current_font {
-                add_array(array, &mut out, font);
+            Op::TextDrawAdjusted { ref array } => {
+                if let Some(font) = current_font {
+                    add_array(array, &mut out, font);
+                }
             }
             Op::TextNewline => {
                 out.push('\n');
@@ -199,7 +226,7 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
             }
             Op::MoveTextPosition { translation } => {
                 text_matrix.f += translation.y * text_matrix.d;
-                
+
                 if translation.y != 0.0 {
                     out.push('\n');
                 }
