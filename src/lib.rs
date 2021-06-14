@@ -3,6 +3,7 @@ use log::warn;
 
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::rc::Rc;
 
 use pdf::content::*;
 use pdf::encoding::BaseEncoding;
@@ -15,6 +16,7 @@ use pdf::primitive::Primitive;
 use pdf_encoding::{self, ForwardMap};
 
 use byteorder::BE;
+use euclid::Transform2D;
 use utf16_ext::Utf16ReadExt;
 
 fn utf16be_to_string(mut data: &[u8]) -> String {
@@ -99,23 +101,90 @@ fn parse_cmap(data: &[u8]) -> HashMap<u16, String> {
     map
 }
 
+#[derive(Clone)]
 enum Decoder {
     Map(&'static ForwardMap),
     Cmap(HashMap<u16, String>),
+    None,
 }
 
-struct FontInfo {
+impl Default for Decoder {
+    fn default() -> Self {
+        Decoder::None
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct FontInfo {
     decoder: Decoder,
 }
-struct Cache {
-    fonts: HashMap<String, FontInfo>,
-}
-impl Cache {
-    fn new() -> Self {
-        Cache {
-            fonts: HashMap::new(),
+
+impl FontInfo {
+    pub fn decode(&self, data: &[u8], out: &mut String) {
+        match self.decoder {
+            Decoder::Cmap(ref cmap) => {
+                for w in data.windows(2) {
+                    let cp = u16::from_be_bytes(w.try_into().unwrap());
+                    if let Some(s) = cmap.get(&cp) {
+                        out.push_str(s);
+                    }
+                }
+            }
+            Decoder::Map(map) => out.extend(data.iter().filter_map(|&b| map.get(b))),
+            Decoder::None => {
+                if data.starts_with(&[0xfe, 0xff]) {
+                    let utf16 = data[2..]
+                        .chunks(2)
+                        .map(|c| (c[0] as u16) << 8 | c[1] as u16)
+                        .collect::<Vec<_>>();
+                    if let Ok(text) = String::from_utf16(&utf16) {
+                        out.push_str(&text);
+                    }
+                } else if let Ok(text) = std::str::from_utf8(data) {
+                    out.push_str(text);
+                }
+            }
         }
     }
+}
+
+struct FontCache<'src, T: Resolve> {
+    fonts: HashMap<String, Rc<FontInfo>>,
+    page: &'src Page,
+    resolve: &'src T,
+    default_font: Rc<FontInfo>,
+}
+
+impl<'src, T: Resolve> FontCache<'src, T> {
+    fn new(page: &'src Page, resolve: &'src T) -> Self {
+        let mut cache = FontCache {
+            fonts: HashMap::new(),
+            page,
+            resolve,
+            default_font: Rc::new(FontInfo::default()),
+        };
+
+        cache.populate();
+
+        cache
+    }
+
+    fn populate(&mut self) {
+        if let Ok(ref resources) = self.page.resources() {
+            for (name, &font) in resources.fonts.iter() {
+                if let Ok(font) = self.resolve.get(font) {
+                    self.add_font(name, font);
+                }
+            }
+
+            for (font, _) in resources.graphics_states.values().filter_map(|gs| gs.font) {
+                if let Ok(font) = self.resolve.get(font) {
+                    self.add_font(font.name.clone(), font);
+                }
+            }
+        }
+    }
+
     fn add_font(&mut self, name: impl Into<String>, font: RcRef<Font>) {
         let decoder = if let Some(to_unicode) = font.to_unicode() {
             let cmap = parse_cmap(to_unicode.data().unwrap());
@@ -135,109 +204,138 @@ impl Cache {
             return;
         };
 
-        self.fonts.insert(name.into(), FontInfo { decoder });
+        self.fonts
+            .insert(name.into(), Rc::new(FontInfo { decoder }));
     }
-    fn get_font(&self, name: &str) -> Option<&FontInfo> {
-        self.fonts.get(name)
+
+    fn get_by_font_name(&self, name: &str) -> Rc<FontInfo> {
+        self.fonts.get(name).unwrap_or(&self.default_font).clone()
+    }
+
+    fn get_by_graphic_state_name(&self, name: &str) -> Option<(Rc<FontInfo>, f32)> {
+        self.page
+            .resources()
+            .ok()
+            .and_then(|resources| resources.graphics_states.get(name))
+            .and_then(|gs| gs.font)
+            .map(|(font, font_size)| {
+                let font = self
+                    .resolve
+                    .get(font)
+                    .ok()
+                    .map(|font| self.get_by_font_name(&font.name))
+                    .unwrap_or_else(|| self.default_font.clone());
+
+                (font, font_size)
+            })
     }
 }
 
-fn add_string(data: &[u8], out: &mut String, info: &FontInfo) {
-    match info.decoder {
-        Decoder::Cmap(ref cmap) => {
-            for w in data.windows(2) {
-                let cp = u16::from_be_bytes(w.try_into().unwrap());
-                if let Some(s) = cmap.get(&cp) {
-                    out.push_str(s);
+#[derive(Clone, Default)]
+pub struct TextState {
+    pub font: Rc<FontInfo>,
+    pub font_size: f32,
+    pub text_leading: f32,
+    pub text_matrix: Transform2D<f32, PdfSpace, PdfSpace>,
+}
+
+pub fn ops_with_text_state<'src, T: Resolve>(
+    page: &'src Page,
+    resolve: &'src T,
+) -> impl Iterator<Item = (&'src Op, Rc<TextState>)> + 'src {
+    page.contents.iter().flat_map(move |contents| {
+        contents.operations.iter().scan(
+            (Rc::new(TextState::default()), FontCache::new(page, resolve)),
+            |(state, font_cache), op| {
+                let mut update_state = |update_fn: &dyn Fn(&mut TextState)| {
+                    let old_state: &TextState = state;
+                    let mut new_state = old_state.clone();
+
+                    update_fn(&mut new_state);
+
+                    *state = Rc::new(new_state);
+                };
+
+                match *op {
+                    Op::BeginText => {
+                        *state = Default::default();
+                    }
+                    Op::GraphicsState { ref name } => {
+                        update_state(&|state: &mut TextState| {
+                            if let Some((font, font_size)) =
+                                font_cache.get_by_graphic_state_name(name)
+                            {
+                                state.font = font;
+                                state.font_size = font_size;
+                            }
+                        });
+                    }
+                    Op::TextFont { ref name, size } => {
+                        update_state(&|state: &mut TextState| {
+                            state.font = font_cache.get_by_font_name(name);
+                            state.font_size = size;
+                        });
+                    }
+                    Op::Leading { leading } => {
+                        update_state(&|state: &mut TextState| state.text_leading = leading);
+                    }
+                    Op::TextNewline => {
+                        update_state(&|state: &mut TextState| {
+                            state.text_matrix = state.text_matrix.pre_translate(
+                                Point {
+                                    x: 0.0f32,
+                                    y: state.text_leading,
+                                }
+                                .into(),
+                            );
+                        });
+                    }
+                    Op::MoveTextPosition { translation } => {
+                        update_state(&|state: &mut TextState| {
+                            state.text_matrix = state.text_matrix.pre_translate(translation.into());
+                        });
+                    }
+                    Op::SetTextMatrix { matrix } => {
+                        update_state(&|state: &mut TextState| {
+                            state.text_matrix = matrix.into();
+                        });
+                    }
+                    _ => {}
                 }
-            }
-        }
-        Decoder::Map(map) => out.extend(data.iter().filter_map(|&b| map.get(b))),
-    }
-}
 
-fn add_array(arr: &[Primitive], out: &mut String, info: &FontInfo) {
-    // println!("p: {:?}", p);
-    for p in arr.iter() {
-        match p {
-            Primitive::String(s) => add_string(&s.data, out, info),
-            _ => {}
-        }
-    }
+                Some((op, state.clone()))
+            },
+        )
+    })
 }
 
 pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError> {
-    let resources = page.resources.as_ref().unwrap();
-    let mut cache = Cache::new();
     let mut out = String::new();
 
-    // make sure all fonts are in the cache, so we can reference them
-    for (name, &font) in &resources.fonts {
-        cache.add_font(name, resolve.get(font)?);
-    }
-    for gs in resources.graphics_states.values() {
-        if let Some((font, _)) = gs.font {
-            let font = resolve.get(font)?;
-            cache.add_font(font.name.clone(), font);
-        }
-    }
-    let mut current_font = None;
-    let contents = page.contents.as_ref().unwrap();
-    let mut font_size = 0.0;
-    let mut text_leading = 1.0;
-    let mut text_matrix = Matrix {
-        a: 1.0,
-        b: 0.0,
-        c: 0.0,
-        d: 1.0,
-        e: 0.0,
-        f: 0.0,
-    };
-
-    for op in &contents.operations {
+    for (op, text_state) in ops_with_text_state(page, resolve) {
         match *op {
-            Op::GraphicsState { ref name } => {
-                let gs = resources.graphics_states.get(name).unwrap();
-
-                if let Some((font, size)) = gs.font {
-                    let font = resolve.get(font)?;
-                    current_font = cache.get_font(&font.name);
-                    font_size = size;
-                }
-            }
-            Op::Leading { leading } => text_leading = leading,
-            Op::TextFont { ref name, size } => {
-                current_font = cache.get_font(name);
-                font_size = size;
-            }
-            Op::TextDraw { ref text } => {
-                if let Some(font) = current_font {
-                    add_string(&text.data, &mut out, font);
-                }
-            }
+            Op::TextDraw { ref text } => text_state.font.decode(&text.data, &mut out),
             Op::TextDrawAdjusted { ref array } => {
-                if let Some(font) = current_font {
-                    add_array(array, &mut out, font);
+                for data in array {
+                    if let TextDrawAdjusted::Text(text) = data {
+                        text_state.font.decode(&text.data, &mut out);
+                    }
                 }
             }
             Op::TextNewline => {
                 out.push('\n');
-                text_matrix.f -= text_leading * text_matrix.d;
             }
             Op::MoveTextPosition { translation } => {
-                text_matrix.f += translation.y * text_matrix.d;
-
-                if translation.y != 0.0 {
+                if translation.y.abs() < f32::EPSILON {
                     out.push('\n');
                 }
             }
             Op::SetTextMatrix { matrix } => {
-                if matrix.f != text_matrix.f {
+                if (matrix.f - text_state.text_matrix.m32).abs() < f32::EPSILON {
                     out.push('\n');
                 } else {
                     out.push('\t');
                 }
-                text_matrix = matrix;
             }
             _ => {}
         }
