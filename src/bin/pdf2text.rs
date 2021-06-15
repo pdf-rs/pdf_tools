@@ -1,5 +1,5 @@
-use pdf_tools::page_text;
 use pdf::file::File;
+use pdf_tools::page_text;
 
 fn main() {
     let input = std::env::args().nth(1).expect("no input file given");
