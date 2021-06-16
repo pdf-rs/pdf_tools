@@ -194,6 +194,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
                 BaseEncoding::StandardEncoding => &pdf_encoding::STANDARD,
                 BaseEncoding::SymbolEncoding => &pdf_encoding::SYMBOL,
                 BaseEncoding::WinAnsiEncoding => &pdf_encoding::WINANSI,
+                BaseEncoding::MacRomanEncoding => &pdf_encoding::MACROMAN,
                 ref e => {
                     warn!("unsupported pdf encoding {:?}", e);
                     return;
