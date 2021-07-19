@@ -7,7 +7,5 @@ edition = "2018"
 [dependencies]
 pdf = { git = "https://github.com/pdf-rs/pdf", features = [ "euclid" ] }
 pdf_encoding = "*"
-byteorder = "*"
 euclid = "0.22.6"
-utf16-ext = "*"
 log = "*"

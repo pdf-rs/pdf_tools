@@ -10,101 +10,14 @@ use pdf::encoding::BaseEncoding;
 use pdf::error::PdfError;
 use pdf::font::*;
 use pdf::object::*;
-use pdf::parser::parse_with_lexer;
-use pdf::parser::Lexer;
-use pdf::primitive::Primitive;
 use pdf_encoding::{self, ForwardMap};
 
-use byteorder::BE;
 use euclid::Transform2D;
-use utf16_ext::Utf16ReadExt;
-
-fn utf16be_to_string(mut data: &[u8]) -> String {
-    (&mut data)
-        .utf16_chars::<BE>()
-        .map(|c| c.unwrap())
-        .collect()
-}
-
-// totally not a steaming pile of hacks
-fn parse_cmap(data: &[u8]) -> HashMap<u16, String> {
-    let mut lexer = Lexer::new(data);
-    let mut map = HashMap::new();
-    while let Ok(substr) = lexer.next() {
-        match substr.as_slice() {
-            b"beginbfchar" => loop {
-                let a = parse_with_lexer(&mut lexer, &NoResolve);
-                let b = parse_with_lexer(&mut lexer, &NoResolve);
-                match (a, b) {
-                    (Ok(Primitive::String(cid_data)), Ok(Primitive::String(unicode_data))) => {
-                        let data = cid_data.as_bytes();
-                        let cid = match data.len() {
-                            1 => data[0] as u16,
-                            2 => u16::from_be_bytes(data.try_into().unwrap()),
-                            _ => {
-                                dbg!(data, unicode_data);
-                                continue;
-                            }
-                        };
-                        let unicode = utf16be_to_string(unicode_data.as_bytes());
-                        map.insert(cid, unicode);
-                    }
-                    _ => break,
-                }
-            },
-            b"beginbfrange" => loop {
-                let a = parse_with_lexer(&mut lexer, &NoResolve);
-                let b = parse_with_lexer(&mut lexer, &NoResolve);
-                let c = parse_with_lexer(&mut lexer, &NoResolve);
-                match (a, b, c) {
-                    (
-                        Ok(Primitive::String(cid_start_data)),
-                        Ok(Primitive::String(cid_end_data)),
-                        Ok(Primitive::String(unicode_data)),
-                    ) => {
-                        let cid_start =
-                            u16::from_be_bytes(cid_start_data.as_bytes().try_into().unwrap());
-                        let cid_end =
-                            u16::from_be_bytes(cid_end_data.as_bytes().try_into().unwrap());
-                        let mut unicode_data = unicode_data.into_bytes();
-
-                        for cid in cid_start..=cid_end {
-                            let unicode = utf16be_to_string(&unicode_data);
-                            map.insert(cid, unicode);
-                            *unicode_data.last_mut().unwrap() += 1;
-                        }
-                    }
-                    (
-                        Ok(Primitive::String(cid_start_data)),
-                        Ok(Primitive::String(cid_end_data)),
-                        Ok(Primitive::Array(unicode_data_arr)),
-                    ) => {
-                        let cid_start =
-                            u16::from_be_bytes(cid_start_data.as_bytes().try_into().unwrap());
-                        let cid_end =
-                            u16::from_be_bytes(cid_end_data.as_bytes().try_into().unwrap());
-
-                        for (cid, unicode_data) in (cid_start..=cid_end).zip(unicode_data_arr) {
-                            let unicode =
-                                utf16be_to_string(&unicode_data.as_string().unwrap().as_bytes());
-                            map.insert(cid, unicode);
-                        }
-                    }
-                    _ => break,
-                }
-            },
-            b"endcmap" => break,
-            _ => {}
-        }
-    }
-
-    map
-}
 
 #[derive(Clone)]
 enum Decoder {
     Map(&'static ForwardMap),
-    Cmap(HashMap<u16, String>),
+    Cmap(ToUnicodeMap),
     None,
 }
 
@@ -125,7 +38,7 @@ impl FontInfo {
             Decoder::Cmap(ref cmap) => {
                 for w in data.windows(2) {
                     let cp = u16::from_be_bytes(w.try_into().unwrap());
-                    if let Some(s) = cmap.get(&cp) {
+                    if let Some(s) = cmap.get(cp) {
                         out.push_str(s);
                     }
                 }
@@ -187,7 +100,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
 
     fn add_font(&mut self, name: impl Into<String>, font: RcRef<Font>) {
         let decoder = if let Some(to_unicode) = font.to_unicode() {
-            let cmap = parse_cmap(to_unicode.data().unwrap());
+            let cmap = to_unicode.unwrap();
             Decoder::Cmap(cmap)
         } else if let Some(encoding) = font.encoding() {
             let map = match encoding.base {
