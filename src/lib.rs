@@ -92,7 +92,9 @@ impl<'src, T: Resolve> FontCache<'src, T> {
 
             for (font, _) in resources.graphics_states.values().filter_map(|gs| gs.font) {
                 if let Ok(font) = self.resolve.get(font) {
-                    self.add_font(font.name.clone(), font);
+                    if let Some(name) = &font.name {
+                        self.add_font(name.clone(), font);
+                    }
                 }
             }
         }
@@ -137,7 +139,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
                     .resolve
                     .get(font)
                     .ok()
-                    .map(|font| self.get_by_font_name(&font.name))
+                    .map(|font| self.get_by_font_name(font.name.clone().unwrap_or_default().as_str()))
                     .unwrap_or_else(|| self.default_font.clone());
 
                 (font, font_size)
@@ -158,7 +160,7 @@ pub fn ops_with_text_state<'src, T: Resolve>(
     resolve: &'src T,
 ) -> impl Iterator<Item = (&'src Op, Rc<TextState>)> + 'src {
     page.contents.iter().flat_map(move |contents| {
-        contents.operations.iter().scan(
+        contents.operations(resolve).unwrap().iter().scan(
             (Rc::new(TextState::default()), FontCache::new(page, resolve)),
             |(state, font_cache), op| {
                 let mut update_state = |update_fn: &dyn Fn(&mut TextState)| {
