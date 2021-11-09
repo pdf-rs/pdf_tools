@@ -1,5 +1,7 @@
 extern crate pdf;
 use log::warn;
+use pdf_encoding::DifferenceForwardMap;
+use pdf_encoding::Entry;
 
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -16,7 +18,7 @@ use euclid::Transform2D;
 
 #[derive(Clone)]
 enum Decoder {
-    Map(&'static ForwardMap),
+    Map(DifferenceForwardMap),
     Cmap(ToUnicodeMap),
     None,
 }
@@ -34,7 +36,7 @@ pub struct FontInfo {
 
 impl FontInfo {
     pub fn decode(&self, data: &[u8], out: &mut String) {
-        match self.decoder {
+        match &self.decoder {
             Decoder::Cmap(ref cmap) => {
                 for w in data.windows(2) {
                     let cp = u16::from_be_bytes(w.try_into().unwrap());
@@ -43,7 +45,10 @@ impl FontInfo {
                     }
                 }
             }
-            Decoder::Map(map) => out.extend(data.iter().filter_map(|&b| map.get(b))),
+            Decoder::Map(map) => 
+            {
+                out.extend(data.iter().filter_map(|&b| map.get(b).map(|v| v.to_owned())));
+            },
             Decoder::None => {
                 if data.starts_with(&[0xfe, 0xff]) {
                     let utf16 = data[2..]
@@ -106,19 +111,22 @@ impl<'src, T: Resolve> FontCache<'src, T> {
             Decoder::Cmap(cmap)
         } else if let Some(encoding) = font.encoding() {
             let map = match encoding.base {
-                BaseEncoding::StandardEncoding => &pdf_encoding::STANDARD,
-                BaseEncoding::SymbolEncoding => &pdf_encoding::SYMBOL,
-                BaseEncoding::WinAnsiEncoding => &pdf_encoding::WINANSI,
-                BaseEncoding::MacRomanEncoding => &pdf_encoding::MACROMAN,
+                BaseEncoding::StandardEncoding => Some(&pdf_encoding::STANDARD),
+                BaseEncoding::SymbolEncoding => Some(&pdf_encoding::SYMBOL),
+                BaseEncoding::WinAnsiEncoding => Some(&pdf_encoding::WINANSI),
+                BaseEncoding::MacRomanEncoding => Some(&pdf_encoding::MACROMAN),
+                BaseEncoding::None => None,
                 ref e => {
                     warn!("unsupported pdf encoding {:?}", e);
                     return;
                 }
             };
-            Decoder::Map(map)
+
+            Decoder::Map(DifferenceForwardMap::new(map, encoding.differences.clone()))
         } else {
             return;
         };
+
 
         self.fonts
             .insert(name.into(), Rc::new(FontInfo { decoder }));
