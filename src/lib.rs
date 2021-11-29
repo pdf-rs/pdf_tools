@@ -1,7 +1,5 @@
 extern crate pdf;
 use log::warn;
-use pdf_encoding::DifferenceForwardMap;
-use pdf_encoding::Entry;
 
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -9,10 +7,10 @@ use std::rc::Rc;
 
 use pdf::content::*;
 use pdf::encoding::BaseEncoding;
-use pdf::error::PdfError;
+use pdf::error::{PdfError, Result};
 use pdf::font::*;
 use pdf::object::*;
-use pdf_encoding::{self, ForwardMap};
+use pdf_encoding::{self, DifferenceForwardMap};
 
 use euclid::Transform2D;
 
@@ -35,31 +33,46 @@ pub struct FontInfo {
 }
 
 impl FontInfo {
-    pub fn decode(&self, data: &[u8], out: &mut String) {
+    pub fn decode(&self, data: &[u8], out: &mut String) -> Result<()> {
         match &self.decoder {
             Decoder::Cmap(ref cmap) => {
-                for w in data.windows(2) {
-                    let cp = u16::from_be_bytes(w.try_into().unwrap());
-                    if let Some(s) = cmap.get(cp) {
-                        out.push_str(s);
+                // FIXME: not sure the BOM is obligatory
+                if data.starts_with(&[0xfe, 0xff]) {
+                    // FIXME: really windows not chunks!?
+                    for w in data.windows(2) {
+                        let cp = u16::from_be_bytes(w.try_into().unwrap());
+                        if let Some(s) = cmap.get(cp) {
+                            out.push_str(s);
+                        }
                     }
+                } else {
+                    out.extend(
+                        data.iter()
+                            .filter_map(|&b| cmap.get(b.into()).map(|v| v.to_owned())),
+                    );
                 }
+                Ok(())
             }
-            Decoder::Map(map) => 
-            {
-                out.extend(data.iter().filter_map(|&b| map.get(b).map(|v| v.to_owned())));
-            },
+            Decoder::Map(map) => {
+                out.extend(
+                    data.iter()
+                        .filter_map(|&b| map.get(b).map(|v| v.to_owned())),
+                );
+                Ok(())
+            }
             Decoder::None => {
                 if data.starts_with(&[0xfe, 0xff]) {
-                    let utf16 = data[2..]
-                        .chunks(2)
-                        .map(|c| (c[0] as u16) << 8 | c[1] as u16)
-                        .collect::<Vec<_>>();
-                    if let Ok(text) = String::from_utf16(&utf16) {
-                        out.push_str(&text);
-                    }
+                    utf16be_to_char(&data[2..]).try_for_each(|r| {
+                        r.map_or(Err(PdfError::Utf16Decode), |c| {
+                            out.push(c);
+                            Ok(())
+                        })
+                    })
                 } else if let Ok(text) = std::str::from_utf8(data) {
                     out.push_str(text);
+                    Ok(())
+                } else {
+                    Err(PdfError::Utf16Decode)
                 }
             }
         }
@@ -88,7 +101,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
     }
 
     fn populate(&mut self) {
-        if let Ok(ref resources) = self.page.resources() {
+        if let Ok(resources) = self.page.resources() {
             for (name, &font) in resources.fonts.iter() {
                 if let Ok(font) = self.resolve.get(font) {
                     self.add_font(name, font);
@@ -127,7 +140,6 @@ impl<'src, T: Resolve> FontCache<'src, T> {
             return;
         };
 
-
         self.fonts
             .insert(name.into(), Rc::new(FontInfo { decoder }));
     }
@@ -147,7 +159,9 @@ impl<'src, T: Resolve> FontCache<'src, T> {
                     .resolve
                     .get(font)
                     .ok()
-                    .map(|font| self.get_by_font_name(font.name.clone().unwrap_or_default().as_str()))
+                    .map(|font| {
+                        self.get_by_font_name(font.name.clone().unwrap_or_default().as_str())
+                    })
                     .unwrap_or_else(|| self.default_font.clone());
 
                 (font, font_size)
@@ -238,11 +252,11 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
 
     for (op, text_state) in ops_with_text_state(page, resolve) {
         match *op {
-            Op::TextDraw { ref text } => text_state.font.decode(&text.data, &mut out),
+            Op::TextDraw { ref text } => text_state.font.decode(&text.data, &mut out)?,
             Op::TextDrawAdjusted { ref array } => {
                 for data in array {
                     if let TextDrawAdjusted::Text(text) = data {
-                        text_state.font.decode(&text.data, &mut out);
+                        text_state.font.decode(&text.data, &mut out)?;
                     }
                 }
             }
