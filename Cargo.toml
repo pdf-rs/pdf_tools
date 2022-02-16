@@ -6,6 +6,6 @@ edition = "2018"
 
 [dependencies]
 pdf = { git = "https://github.com/pdf-rs/pdf", features = [ "euclid" ] }
-pdf_encoding = { git = "https://github.com/pdf-rs/encoding" }
+pdf_encoding = "0.3.0"
 euclid = "0.22.6"
 log = "*"
