@@ -180,9 +180,9 @@ pub struct TextState {
 pub fn ops_with_text_state<'src, T: Resolve>(
     page: &'src Page,
     resolve: &'src T,
-) -> impl Iterator<Item = (&'src Op, Rc<TextState>)> + 'src {
+) -> impl Iterator<Item = (Op, Rc<TextState>)> + 'src {
     page.contents.iter().flat_map(move |contents| {
-        contents.operations(resolve).unwrap().iter().scan(
+        contents.operations(resolve).unwrap().into_iter().scan(
             (Rc::new(TextState::default()), FontCache::new(page, resolve)),
             |(state, font_cache), op| {
                 let mut update_state = |update_fn: &dyn Fn(&mut TextState)| {
@@ -194,7 +194,7 @@ pub fn ops_with_text_state<'src, T: Resolve>(
                     *state = Rc::new(new_state);
                 };
 
-                match *op {
+                match op {
                     Op::BeginText => {
                         *state = Default::default();
                     }
@@ -251,7 +251,7 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
     let mut out = String::new();
 
     for (op, text_state) in ops_with_text_state(page, resolve) {
-        match *op {
+        match op {
             Op::TextDraw { ref text } => text_state.font.decode(&text.data, &mut out)?,
             Op::TextDrawAdjusted { ref array } => {
                 for data in array {
