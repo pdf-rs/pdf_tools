@@ -1,5 +1,6 @@
 extern crate pdf;
 use log::warn;
+use pdf::primitive::Name;
 
 use std::collections::HashMap;
 use std::convert::TryInto;
@@ -80,7 +81,7 @@ impl FontInfo {
 }
 
 struct FontCache<'src, T: Resolve> {
-    fonts: HashMap<String, Rc<FontInfo>>,
+    fonts: HashMap<Name, Rc<FontInfo>>,
     page: &'src Page,
     resolve: &'src T,
     default_font: Rc<FontInfo>,
@@ -104,7 +105,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
         if let Ok(resources) = self.page.resources() {
             for (name, &font) in resources.fonts.iter() {
                 if let Ok(font) = self.resolve.get(font) {
-                    self.add_font(name, font);
+                    self.add_font(name.clone(), font);
                 }
             }
 
@@ -118,8 +119,8 @@ impl<'src, T: Resolve> FontCache<'src, T> {
         }
     }
 
-    fn add_font(&mut self, name: impl Into<String>, font: RcRef<Font>) {
-        let decoder = if let Some(to_unicode) = font.to_unicode() {
+    fn add_font(&mut self, name: Name, font: RcRef<Font>) {
+        let decoder = if let Some(to_unicode) = font.to_unicode(self.resolve) {
             let cmap = to_unicode.unwrap();
             Decoder::Cmap(cmap)
         } else if let Some(encoding) = font.encoding() {
@@ -135,16 +136,22 @@ impl<'src, T: Resolve> FontCache<'src, T> {
                 }
             };
 
-            Decoder::Map(DifferenceForwardMap::new(map, encoding.differences.clone()))
+            Decoder::Map(DifferenceForwardMap::new(
+                map,
+                encoding
+                    .differences
+                    .iter()
+                    .map(|(k, v)| (*k, v.to_string()))
+                    .collect(),
+            ))
         } else {
             return;
         };
 
-        self.fonts
-            .insert(name.into(), Rc::new(FontInfo { decoder }));
+        self.fonts.insert(name, Rc::new(FontInfo { decoder }));
     }
 
-    fn get_by_font_name(&self, name: &str) -> Rc<FontInfo> {
+    fn get_by_font_name(&self, name: &Name) -> Rc<FontInfo> {
         self.fonts.get(name).unwrap_or(&self.default_font).clone()
     }
 
@@ -160,7 +167,10 @@ impl<'src, T: Resolve> FontCache<'src, T> {
                     .get(font)
                     .ok()
                     .map(|font| {
-                        self.get_by_font_name(font.name.clone().unwrap_or_default().as_str())
+                        font.name
+                            .as_ref()
+                            .map(|name| self.get_by_font_name(name))
+                            .unwrap_or_else(|| self.default_font.clone())
                     })
                     .unwrap_or_else(|| self.default_font.clone());
 
