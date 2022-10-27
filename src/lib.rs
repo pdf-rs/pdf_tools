@@ -103,9 +103,11 @@ impl<'src, T: Resolve> FontCache<'src, T> {
 
     fn populate(&mut self) {
         if let Ok(resources) = self.page.resources() {
-            for (name, &font) in resources.fonts.iter() {
-                if let Ok(font) = self.resolve.get(font) {
-                    self.add_font(name.clone(), font);
+            for (name, font) in resources.fonts.iter() {
+                if let Some(font) = font.as_ref() {
+                    if let Ok(font) = self.resolve.get(font) {
+                        self.add_font(name.clone(), font);
+                    }
                 }
             }
 
