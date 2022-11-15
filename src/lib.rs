@@ -276,7 +276,7 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
                 out.push('\n');
             }
             Op::MoveTextPosition { translation } => {
-                if translation.y.abs() < f32::EPSILON {
+                if translation.y < 0.0 {
                     out.push('\n');
                 }
             }
