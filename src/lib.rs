@@ -121,7 +121,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
         }
     }
 
-    fn add_font(&mut self, name: Name, font: RcRef<Font>) {
+    fn add_font(&mut self, name: impl Into<Name>, font: RcRef<Font>) {
         let decoder = if let Some(to_unicode) = font.to_unicode(self.resolve) {
             let cmap = to_unicode.unwrap();
             Decoder::Cmap(cmap)
@@ -150,14 +150,15 @@ impl<'src, T: Resolve> FontCache<'src, T> {
             return;
         };
 
-        self.fonts.insert(name, Rc::new(FontInfo { decoder }));
+        self.fonts
+            .insert(name.into(), Rc::new(FontInfo { decoder }));
     }
 
     fn get_by_font_name(&self, name: &Name) -> Rc<FontInfo> {
         self.fonts.get(name).unwrap_or(&self.default_font).clone()
     }
 
-    fn get_by_graphic_state_name(&self, name: &str) -> Option<(Rc<FontInfo>, f32)> {
+    fn get_by_graphic_state_name(&self, name: &Name) -> Option<(Rc<FontInfo>, f32)> {
         self.page
             .resources()
             .ok()
@@ -168,12 +169,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
                     .resolve
                     .get(font)
                     .ok()
-                    .map(|font| {
-                        font.name
-                            .as_ref()
-                            .map(|name| self.get_by_font_name(name))
-                            .unwrap_or_else(|| self.default_font.clone())
-                    })
+                    .and_then(|font| Some(self.get_by_font_name(font.name.as_ref()?)))
                     .unwrap_or_else(|| self.default_font.clone());
 
                 (font, font_size)
