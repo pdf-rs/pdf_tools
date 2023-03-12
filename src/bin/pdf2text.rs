@@ -1,18 +1,19 @@
-use pdf::file::File;
+use std::{env, path::PathBuf};
+
+use pdf::file::FileOptions;
 use pdf_tools::page_text;
 
 fn main() {
-    let input = std::env::args().nth(1).expect("no input file given");
-    let file = File::open(input).expect("failed to read PDF");
-    for (page_nr, page) in file.pages().enumerate() {
+    let path = PathBuf::from(env::args_os().nth(1).expect("no file given"));
+    let file = FileOptions::cached().open(&path).unwrap();
+
+    for (_page_nr, page) in file.pages().enumerate() {
         if let Ok(page) = page {
-            println!("=== PAGE {} ===\n", page_nr);
             if let Ok(text) = page_text(&page, &file) {
-                println!("{}", text);
+                print!("{}", text);
             } else {
                 println!("ERROR");
             }
-            println!();
         }
     }
 }

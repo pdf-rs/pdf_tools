@@ -273,7 +273,7 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
             }
             Op::MoveTextPosition { translation } => {
                 if translation.y.abs() < f32::EPSILON {
-                    out.push('\n');
+                    //out.push('\n');
                 }
             }
             Op::SetTextMatrix { matrix } => {
