@@ -15,17 +15,12 @@ use pdf_encoding::{self, DifferenceForwardMap};
 
 use euclid::Transform2D;
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 enum Decoder {
     Map(DifferenceForwardMap),
     Cmap(ToUnicodeMap),
+    #[default]
     None,
-}
-
-impl Default for Decoder {
-    fn default() -> Self {
-        Decoder::None
-    }
 }
 
 #[derive(Default, Clone)]

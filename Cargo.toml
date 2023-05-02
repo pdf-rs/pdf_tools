@@ -5,7 +5,7 @@ authors = ["Sebastian K <s3bk@protonmail.com>"]
 edition = "2018"
 
 [dependencies]
-pdf = { git = "https://github.com/pdf-rs/pdf", features = [ "euclid" ] }
-pdf_encoding = "0.3.0"
 euclid = "0.22.6"
 log = "*"
+pdf = { version = "0.8.1", features = ["euclid"] }
+pdf_encoding = "0.3.0"
