@@ -9,7 +9,7 @@ fn main() {
     for (page_nr, page) in file.pages().enumerate() {
         if let Ok(page) = page {
             println!("=== PAGE {} ===\n", page_nr);
-            if let Ok(text) = page_text(&page, &file) {
+            if let Ok(text) = page_text(&page, &file.resolver()) {
                 println!("{}", text);
             } else {
                 println!("ERROR");
