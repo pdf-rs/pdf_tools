@@ -2,10 +2,34 @@
 name = "pdf_tools"
 version = "0.1.0"
 authors = ["Sebastian K <s3bk@protonmail.com>"]
-edition = "2018"
+edition = "2021"
+
+# The fixes this tool relies on (and the ones it found) live in the local
+# checkout of the crate, not in the released 0.10.0. Drop this section when
+# they are upstream and released.
+[patch.crates-io]
+pdf = { path = "/home/hematite/task-clones/pdf/pdf" }
 
 [dependencies]
 euclid = "0.22.6"
 log = "*"
-pdf = { version = "0.9.0", features = ["euclid"] }
+pdf = { version = "0.10.0", features = ["euclid", "mmap"] }
 pdf_encoding = "0.4.0"
+# pdf_inspect writes decoded images
+clap = { version = "4", features = ["derive"] }
+png = "0.17"
+fax = "0.2"
+# The text layout the viewer actually draws: pdf_render's own tracer, so that
+# `layout` reports the renderer's numbers (font widths, Tc/Tw/Tz, TJ shifts)
+# and not a second opinion computed here.
+pdf_render = { path = "/home/hematite/task-clones/pdf_render/render" }
+# The transform type pdf_render hands out for a text span.
+pathfinder_geometry = { git = "https://github.com/servo/pathfinder" }
+# Glyph metrics, for checking /Widths against the font program.
+font = { git = "https://github.com/pdf-rs/font", rev = "032f427839837c6e1fac7333bd4039d3482d17a7", features = ["cff"] }
+
+# pdf_render asks for pdf over ssh; pin it to the same checkout this crate
+# patches crates.io to, so one copy of `pdf` is in the tree and its types
+# (`Page`, `PlainRef`, ...) are the ones both sides mean.
+[patch."ssh://git@github.com/s3bk/pdf.git"]
+pdf = { path = "/home/hematite/task-clones/pdf/pdf" }
