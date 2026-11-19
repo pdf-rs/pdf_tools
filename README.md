@@ -96,3 +96,74 @@ released; nothing else depends on it.
 This crate now builds against `pdf` 0.10, where `/Font` entries of a page's
 resources are `Lazy<Font>` instead of `MaybeRef<Font>`; `src/lib.rs` loads them
 with `Lazy::load`.
+
+## PDF inspector: `pdf_inspect`
+
+`pdf_inspect` answers questions about a PDF file — what is in it, where, and
+why it renders the way it does. It is built on two layers: a raw one that
+reads the bytes as they are stored (the `startxref` chain, xref tables and
+xref streams, every `N G obj` in the file, every stream bounded by `/Length`
+*and* by `endstream`), and the `pdf` crate's typed view for pages, fonts,
+images and text. Every command works on the raw layer first, so a file the
+library refuses to open can still be inspected.
+
+```text
+cargo build --release --bin pdf_inspect
+```
+
+Global options: `--password PW` for encrypted files, `--strict` (default is
+tolerant), `--max-stream-mb`, `--max-file-mb`.
+
+| command | what it shows |
+| --- | --- |
+| `info FILE` | one screen: header, %%EOF, xref kind and count, objects, startxref target, trailer, pages, Info dictionary, XMP, forms |
+| `xref FILE [--entries] [--free] [--trailers]` | the cross-reference chain, newest first: sections, subsections, `/Prev`, `/XRefStm`, every entry, each trailer dictionary |
+| `objects FILE [--type T] [--has-key K] [--streams] [--sort id\|size\|type] [--limit N]` | every object: where it lives (offset or `objstm 12[3]`), its type, stream size, filter chain |
+| `obj FILE TARGET [--depth N] [--raw]` | one object as PDF syntax; `--depth` follows references, `--raw` prints the stored bytes |
+| `stream FILE TARGET [--raw] [--print] [--hexdump] [--head N] [--to PATH]` | a stream: filter chain, declared vs stored length, decoded size, and its bytes |
+| `pages FILE` | the page tree: size, rotation, content parts, resource counts, annotations |
+| `page FILE PAGE` | one page: the dictionary exactly as stored, then boxes, rotation, contents, resources, annotations |
+| `content FILE PAGE\|REF [--raw] [--ops]` | a content stream: operators with their operands, `--raw` for the decoded source, `--ops` for counts |
+| `text FILE PAGE [--boxes]` | the text, decoded through each font's `/ToUnicode` or `/Encoding`; `--boxes` gives position, size, advance and the gap to the next run |
+| `images FILE [--page N] [--save DIR]` | image XObjects: size, colour space, filters, decoded size, which pages use them |
+| `image FILE TARGET [--to PATH]` | one image, written as PNG / JPEG / JPEG 2000 / JBIG2 / TIFF |
+| `fonts FILE [--page N]` | fonts: subtype, base font, encoding, embedded file size, `/ToUnicode`, simple or CID |
+| `outline FILE`, `annots FILE [--page N]` | bookmarks, annotations |
+| `meta FILE` | trailer, Info dictionary, catalog keys, XMP |
+| `attachments FILE [--save DIR]` | embedded files from the `/Names` tree |
+| `search FILE PATTERN [--ignore-case]` | search page text and every decoded stream, with context |
+| `scan FILE` | the physical layout: objects in file order, orphans, dangling xref entries, gaps, `/Length` disagreements |
+| `verify FILE` | consistency checks: xref offsets that point at the wrong object, `/Length`, decodable streams, references to missing objects, `/Size`, the page tree |
+| `filters FILE` | the filters this build decodes, and which ones the file uses |
+
+`TARGET` is an object reference: `12`, `12 0`, `12.0` or `12/0`. `PAGE` is
+1-based, accepts `last`, and also accepts a page object reference.
+
+### Examples
+
+```text
+pdf_inspect info paper.pdf
+pdf_inspect objects paper.pdf --sort size --limit 20      # what is big in here?
+pdf_inspect obj paper.pdf 12 --depth 2                    # follow /Contents, /Resources, ...
+pdf_inspect stream paper.pdf 27 --to page3.txt            # decompress a stream
+pdf_inspect content paper.pdf 3 --ops                     # what does the page draw?
+pdf_inspect text paper.pdf 3 --boxes                      # where is each run, and how wide?
+pdf_inspect images paper.pdf --page 3 --save img/
+pdf_inspect search paper.pdf "Total" --ignore-case
+pdf_inspect verify broken.pdf
+```
+
+### Checking text rendering and kerning
+
+`text --boxes` prints, for every shown string, where it starts (`x`, `y`), the
+font size, the advance the font's `/Widths` predicts, and `dx`: the difference
+between where the string actually starts and where the previous string's
+advance says it should. PDF text is not kerned — the advance is exactly the
+sum of the glyph widths (plus `Tc`/`Tw`, which this does not see) — so a
+non-zero `dx` means the widths the document declares do not match the layout,
+which is what a renderer will draw. Rows with a large `dx` are marked with `!`
+and counted at the end.
+
+A font whose `/Widths` does not cover the codes in the string (some TeX subset
+fonts) reports a small advance; that is the file's own information, and the
+`dx` column shows the disagreement rather than hiding it.

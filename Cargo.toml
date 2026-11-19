@@ -15,3 +15,7 @@ euclid = "0.22.6"
 log = "*"
 pdf = { version = "0.10.0", features = ["euclid", "mmap"] }
 pdf_encoding = "0.4.0"
+# pdf_inspect writes decoded images
+clap = { version = "4", features = ["derive"] }
+png = "0.17"
+fax = "0.2"

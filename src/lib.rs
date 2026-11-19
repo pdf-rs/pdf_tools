@@ -1,5 +1,6 @@
 extern crate pdf;
 
+pub mod inspect;
 pub mod merge;
 pub mod pages;
 
@@ -30,9 +31,40 @@ enum Decoder {
 #[derive(Default, Clone)]
 pub struct FontInfo {
     decoder: Decoder,
+    /// Glyph advance per character code, in 1/1000 text space units.
+    widths: std::collections::HashMap<u16, f32>,
+    /// Codes are two bytes (Identity-H and the other CID encodings).
+    two_byte: bool,
 }
 
 impl FontInfo {
+    /// How far the text matrix moves after showing `data` at `size`.
+    ///
+    /// PDF text is not kerned: the advance is exactly the sum of the glyph
+    /// widths (plus `Tc`/`Tw`, which this does not see). Comparing it with the
+    /// x of the next run is what shows a font whose widths the renderer and
+    /// the document disagree about.
+    pub fn advance(&self, data: &[u8], size: f32) -> f32 {
+        let mut w = 0.0;
+        if self.two_byte {
+            for pair in data.chunks(2) {
+                if pair.len() == 2 {
+                    let code = u16::from_be_bytes([pair[0], pair[1]]);
+                    w += self.widths.get(&code).copied().unwrap_or(0.0);
+                }
+            }
+        } else {
+            for &b in data {
+                w += self.widths.get(&(b as u16)).copied().unwrap_or(0.0);
+            }
+        }
+        w / 1000.0 * size
+    }
+
+    pub fn two_byte(&self) -> bool {
+        self.two_byte
+    }
+
     pub fn decode(&self, data: &[u8], out: &mut String) -> Result<()> {
         match &self.decoder {
             Decoder::Cmap(ref cmap) => {
@@ -156,8 +188,23 @@ impl<'src, T: Resolve> FontCache<'src, T> {
             }
         };
 
-        self.fonts
-            .insert(name.into(), Rc::new(FontInfo { decoder }));
+        let mut widths = std::collections::HashMap::new();
+        let two_byte = font.is_cid();
+        if let Ok(Some(w)) = font.widths(resolve) {
+            let last: u32 = if two_byte { 0xffff } else { 0xff };
+            for code in 0..=last {
+                widths.insert(code as u16, w.get(code as usize));
+            }
+        }
+
+        self.fonts.insert(
+            name.into(),
+            Rc::new(FontInfo {
+                decoder,
+                widths,
+                two_byte,
+            }),
+        );
     }
 
     fn get_by_font_name(&self, name: &Name) -> Rc<FontInfo> {
