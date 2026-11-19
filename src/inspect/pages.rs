@@ -8,7 +8,7 @@ use super::doc::Doc;
 use super::fmt::{format_f32, human_bytes, kind_of, prim_inline, prim_text, table, truncate};
 
 /// A page argument: `3`, `last`, or a page object reference.
-fn page_ref_of(doc: &Doc, s: &str) -> Result<(usize, PlainRef), String> {
+pub(crate) fn page_ref_of(doc: &Doc, s: &str) -> Result<(usize, PlainRef), String> {
     let s = s.trim();
     if s == "last" {
         let n = doc.page_count()? as usize;

@@ -167,3 +167,49 @@ and counted at the end.
 A font whose `/Widths` does not cover the codes in the string (some TeX subset
 fonts) reports a small advance; that is the file's own information, and the
 `dx` column shows the disagreement rather than hiding it.
+### `layout`: what the renderer will actually draw
+
+`text` decodes the operators itself and adds up advances — a second opinion.
+`layout` instead drives `pdf_render`'s own tracer over the page: the same
+`render_page` call the viewer makes, with a tracer in place of a rasteriser.
+Whatever it prints is what the engine will draw.
+
+```
+pdf_inspect layout paper.pdf 3            # one row per text span
+pdf_inspect layout paper.pdf 3 --chars    # one row per character
+pdf_inspect layout paper.pdf 3 --check    # verdict for the whole page
+```
+
+Coordinates are PDF points from the top-left of the page as displayed
+(`/Rotate` applied, page cropped to its media box) — the same ruler a
+screenshot and a tap position use. That makes the numbers comparable with
+another engine's word boxes, e.g. `pdftotext -bbox`:
+
+```
+<word xMin="133.768" ...>Problem</word>      poppler
+0.0  133.77  134.77  0.000  11.025  ...      pdf_inspect layout --chars
+```
+
+Per span: the operator number it came from, baseline origin, font size, the
+advance along the baseline in points, the distance to the next span on the
+same baseline, the font and the text.
+
+Per character (`--chars`): page position, position and advance in text space
+(the numbers before the text matrix), the gap to the next character, the glyph
+id, the character, and — when `/Widths` and the font program disagree — by how
+much, as a percentage. `/Widths` is what every viewer places glyphs with, so a
+non-zero ratio here is text that is drawn nudged relative to its own design:
+exactly what "the kerning looks wrong" turns out to be.
+
+`--check` counts, for the whole page:
+
+* spans with no font — the text will not appear at all;
+* characters with no glyph (`.notdef`) — visible boxes or blanks;
+* spans that contain TJ kerning (advances that vary inside one span), which is
+  normal for anything produced by TeX;
+* characters whose `/Widths` entry disagrees with the font by more than 1 %.
+
+The standard fonts are taken from `$STANDARD_FONTS`; when that is unset,
+`$PDF_STANDARD_FONTS` or one of the known font directories is used, because
+`pdf_render` panics without it. A page using Helvetica without an embedded
+font shows `<no font>` here if no such directory exists.

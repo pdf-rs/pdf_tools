@@ -9,6 +9,7 @@
 
 mod doc;
 mod fmt;
+mod layout;
 mod media;
 mod misc;
 mod objects;
@@ -35,6 +36,7 @@ EXAMPLES
   pdf_inspect content paper.pdf 3 --ops
   pdf_inspect images paper.pdf --page 3 --save img/
   pdf_inspect text paper.pdf 3 --boxes
+  pdf_inspect layout paper.pdf 3 --chars --check
   pdf_inspect search paper.pdf \"Total\" --ignore-case
   pdf_inspect verify broken.pdf
 ";
@@ -175,6 +177,21 @@ enum Cmd {
         /// One line per shown string: position, font, size, text
         #[arg(long)]
         boxes: bool,
+    },
+
+    /// Text layout as pdf_render computes it: glyph positions, advances, kerning
+    Layout {
+        file: PathBuf,
+        page: String,
+        /// One line per character: position, advance, gap, glyph id
+        #[arg(long)]
+        chars: bool,
+        /// Check advances, missing glyphs and /Widths against the font
+        #[arg(long)]
+        check: bool,
+        /// Cap on characters printed
+        #[arg(long, value_name = "N", default_value_t = 4000)]
+        max_chars: usize,
     },
 
     /// Image XObjects: size, colour space, filters, where they are used
@@ -346,6 +363,21 @@ fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             raw,
             boxes,
         } => (file, Action::Text { page, raw, boxes }),
+        Cmd::Layout {
+            file,
+            page,
+            chars,
+            check,
+            max_chars,
+        } => (
+            file,
+            Action::Layout {
+                page,
+                chars,
+                check,
+                max_chars,
+            },
+        ),
         Cmd::Images { file, page, save } => (file, Action::Images { page, save }),
         Cmd::Image { file, target, to } => (file, Action::Image { target, to }),
         Cmd::Fonts { file, page } => (file, Action::Fonts { page }),
@@ -406,6 +438,20 @@ fn run(ctx: &Ctx, cmd: Cmd) -> Result<(), String> {
             max_ops,
         } => pages::content(&doc, &target, raw, ops, max_ops),
         Action::Text { page, raw, boxes } => pages::text(&doc, &page, raw, boxes),
+        Action::Layout {
+            page,
+            chars,
+            check,
+            max_chars,
+        } => layout::layout(
+            &doc,
+            &page,
+            &layout::Opts {
+                chars,
+                check,
+                max_chars,
+            },
+        ),
         Action::Images { page, save } => media::images(&doc, page, save.as_deref()),
         Action::Image { target, to } => media::image(&doc, &target, to.as_deref()),
         Action::Fonts { page } => media::fonts(&doc, page),
@@ -467,6 +513,12 @@ enum Action {
         page: String,
         raw: bool,
         boxes: bool,
+    },
+    Layout {
+        page: String,
+        chars: bool,
+        check: bool,
+        max_chars: usize,
     },
     Images {
         page: Option<usize>,
