@@ -209,6 +209,14 @@ exactly what "the kerning looks wrong" turns out to be.
   normal for anything produced by TeX;
 * characters whose `/Widths` entry disagrees with the font by more than 1 %.
 
+The comparison needs to know how many font units an em is, which normally
+comes from the font program's `/FontMatrix`. Some generators (WeasyPrint among
+them) write CFF subsets whose matrix the font parser cannot read, and for those
+the scale is taken from the file instead: every glyph gives the same
+`advance / widths` ratio, so the median of it is the font's size in units, and a
+glyph that disagrees still stands out. Such fonts are named in a `note:` line,
+so a relative comparison is never mistaken for an absolute one.
+
 The standard fonts are taken from `$STANDARD_FONTS`; when that is unset,
 `$PDF_STANDARD_FONTS` or one of the known font directories is used, because
 `pdf_render` panics without it. A page using Helvetica without an embedded

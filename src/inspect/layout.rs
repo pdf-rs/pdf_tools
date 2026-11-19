@@ -10,10 +10,11 @@
 //! Coordinates are PDF points from the top-left corner of the page as it is
 //! displayed: the ruler a screenshot and a tap position speak.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use font::Font;
+use font::{Font, GlyphId};
 use pathfinder_geometry::vector::vec2f;
 use pdf_render::tracer::{DrawItem, NullEncoder, TraceCache, Tracer};
 use pdf_render::{render_page, FontEntry, TextSpan, Transform2F};
@@ -21,6 +22,88 @@ use pdf_render::{render_page, FontEntry, TextSpan, Transform2F};
 use super::doc::Doc;
 use super::fmt::{table, truncate};
 use super::pages::page_ref_of;
+
+/// How a font program's advances relate to the em the page measures in.
+#[derive(Clone, Copy)]
+struct AdvanceScale {
+    /// Em units per font unit: `advance * scale` is the advance in em.
+    scale: f32,
+    /// True when `scale` came from the font program's own `/FontMatrix`; false
+    /// when that matrix was unusable and the scale was read out of the file's
+    /// `/Widths` instead (the median of `advance / widths` over the page).
+    absolute: bool,
+}
+
+/// The glyph a character maps to, the advance the font program gives it (font
+/// units) and the advance the page's `/Widths` entry asks for (em).
+fn glyph_advances(
+    f: &FontEntry<NullEncoder>,
+    bytes: &[u8],
+    c: &pdf_render::TextChar,
+) -> Option<(GlyphId, f32, f32)> {
+    let cid = cid_at(bytes, c.idx, f.is_cid)?;
+    let wem = f.widths.as_ref().map(|w| w.get(cid as usize) * 0.001)?;
+    let gid = f.cmap.get(&cid).map(|(gid, _)| *gid)?;
+    Some((gid, f.font.glyph(gid)?.metrics.advance, wem))
+}
+
+/// The font's own `font units -> em` scale, but only when its `/FontMatrix` is
+/// a plain positive scale: CFF fonts made by some generators carry a matrix
+/// the font parser cannot read, and a matrix that is not a scale (sheared,
+/// mirrored, absurd) says nothing about advances.
+fn matrix_scale(f: &FontEntry<NullEncoder>) -> Option<f32> {
+    let m = f.font.font_matrix();
+    let s = m.m11();
+    let plain = s > 1e-6
+        && s <= 1.0
+        && m.m12().abs() < 1e-6
+        && m.m21().abs() < 1e-6
+        && (m.m22() - s).abs() <= s * 0.02;
+    plain.then_some(s)
+}
+
+/// One scale per font on the page, for comparing `/Widths` against the font.
+fn advance_scales(lines: &[Line]) -> HashMap<String, AdvanceScale> {
+    let mut fonts: HashMap<&str, &FontEntry<NullEncoder>> = HashMap::new();
+    let mut ratios: HashMap<&str, Vec<f32>> = HashMap::new();
+    for l in lines {
+        let Some(f) = l.span.font.as_deref() else {
+            continue;
+        };
+        fonts.entry(f.name.as_str()).or_insert(f);
+        for c in &l.span.chars {
+            let Some((_, advance, wem)) = glyph_advances(f, &l.span.bytes, c) else {
+                continue;
+            };
+            // A missing or zero entry says nothing about the font's scale.
+            if wem.abs() < 0.0005 || advance.abs() < 1.0 {
+                continue;
+            }
+            ratios
+                .entry(f.name.as_str())
+                .or_default()
+                .push(advance / wem);
+        }
+    }
+
+    let mut out = HashMap::new();
+    for (name, f) in fonts {
+        if let Some(scale) = matrix_scale(f) {
+            out.insert(name.to_string(), AdvanceScale { scale, absolute: true });
+            continue;
+        }
+        // No usable matrix: the file's own /Widths say what the em is — every
+        // glyph gives the same `advance / widths` ratio, so the median is the
+        // font's size in units, and a glyph that disagrees stands out.
+        let Some(mut v) = ratios.remove(name) else { continue };
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let implied = v[v.len() / 2];
+        if implied > 1.0 {
+            out.insert(name.to_string(), AdvanceScale { scale: 1.0 / implied, absolute: false });
+        }
+    }
+    out
+}
 
 /// 1 / (25.4 / 72): the tracer works in millimetres, this tool in points.
 const PT_PER_MM: f32 = 72.0 / 25.4;
@@ -201,6 +284,9 @@ pub fn layout(doc: &Doc, which: &str, opts: &Opts) -> Result<(), String> {
         )
     );
 
+    // What each font's advances mean, worked out once for the page.
+    let scales = advance_scales(&lines);
+
     let mut kerned = 0usize;
     let mut notdef = 0usize;
     let mut nofont = 0usize;
@@ -265,12 +351,11 @@ pub fn layout(doc: &Doc, which: &str, opts: &Opts) -> Result<(), String> {
             let mut ratio = String::new();
             if let (Some(f), Some(gid), Some(wem)) = (font, gid, wem) {
                 if wem.abs() > 0.0005 && has_glyph {
-                    if let Some(g) = f.font.glyph(gid) {
-                        let from_font = f.font.font_matrix().m11() * g.metrics.advance;
-                        let r = from_font / wem;
-                        if (r - 1.0).abs() > 0.01 {
+                    if let (Some(g), Some(sc)) = (f.font.glyph(gid), scales.get(&f.name)) {
+                        let err = g.metrics.advance * sc.scale / wem - 1.0;
+                        if err.abs() > 0.01 {
                             mismatched += 1;
-                            ratio = format!("{:+.1}%", (r - 1.0) * 100.0);
+                            ratio = format!("{:+.1}%", err * 100.0);
                         }
                     }
                 }
@@ -331,6 +416,20 @@ pub fn layout(doc: &Doc, which: &str, opts: &Opts) -> Result<(), String> {
              {mismatched} char(s) whose /Widths disagrees with the font",
             lines.len()
         );
+        let mut implied: Vec<String> = scales
+            .iter()
+            .filter(|(_, sc)| !sc.absolute)
+            .map(|(name, sc)| format!("{} ({:.0} units/em)", truncate(name, 40), 1.0 / sc.scale))
+            .collect();
+        implied.sort();
+        if !implied.is_empty() {
+            println!(
+                "note: no usable /FontMatrix in {} — advances compared against the scale \
+                 the /Widths imply: {}",
+                if implied.len() == 1 { "this font" } else { "these fonts" },
+                implied.join(", ")
+            );
+        }
         if nofont + notdef > 0 {
             println!(
                 "not a clean page: text that will not appear or will not sit where the \
