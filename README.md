@@ -217,6 +217,13 @@ the scale is taken from the file instead: every glyph gives the same
 glyph that disagrees still stands out. Such fonts are named in a `note:` line,
 so a relative comparison is never mistaken for an absolute one.
 
+## Tests
+
+`tests/inspect.rs` runs the binary over `tests/data/weasyprint.pdf` — ten A4
+pages of Type0 / Identity-H text from WeasyPrint, whose two-byte `/ToUnicode`
+codes and unreadable CFF `/FontMatrix` both used to be decoded wrongly. The
+fixture is not in git; the test skips when it is missing.
+
 The standard fonts are taken from `$STANDARD_FONTS`; when that is unset,
 `$PDF_STANDARD_FONTS` or one of the known font directories is used, because
 `pdf_render` panics without it. A page using Helvetica without an embedded
