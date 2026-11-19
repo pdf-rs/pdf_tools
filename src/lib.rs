@@ -35,6 +35,13 @@ pub struct FontInfo {
     widths: std::collections::HashMap<u16, f32>,
     /// Codes are two bytes (Identity-H and the other CID encodings).
     two_byte: bool,
+    /// Code space ranges from the /ToUnicode CMap: `(low, high, bytes)`.
+    ///
+    /// Codes are not always one byte, and not always two: a CMap declares
+    /// which byte lengths are legal and for which values. Without the ranges
+    /// the only choice left is a guess, and guessing one byte for Identity-H
+    /// turns `018d` into `0x8d` -- the wrong glyph, silently.
+    codespaces: Vec<(u32, u32, u8)>,
 }
 
 impl FontInfo {
@@ -68,6 +75,50 @@ impl FontInfo {
     pub fn decode(&self, data: &[u8], out: &mut String) -> Result<()> {
         match &self.decoder {
             Decoder::Cmap(ref cmap) => {
+                if !self.codespaces.is_empty() {
+                    // The PDF algorithm: at each position take the longest
+                    // code length whose range contains the bytes there.
+                    let mut sizes: Vec<u8> = self.codespaces.iter().map(|c| c.2).collect();
+                    sizes.sort_unstable();
+                    sizes.dedup();
+                    sizes.reverse();
+                    let mut i = 0;
+                    while i < data.len() {
+                        let mut step = 1;
+                        for &len in &sizes {
+                            let n = len as usize;
+                            if i + n > data.len() {
+                                continue;
+                            }
+                            let mut code: u32 = 0;
+                            for &b in &data[i..i + n] {
+                                code = (code << 8) | b as u32;
+                            }
+                            let hit = self.codespaces.iter().any(|&(lo, hi, l)| {
+                                l as usize == n && code >= lo && code <= hi
+                            });
+                            if hit {
+                                if let Some(s) = cmap.get(code as u16) {
+                                    out.push_str(s);
+                                }
+                                step = n;
+                                break;
+                            }
+                        }
+                        i += step;
+                    }
+                    return Ok(());
+                }
+                if self.two_byte {
+                    // Identity-H and friends: two bytes per code, no BOM.
+                    for w in data.chunks_exact(2) {
+                        let code = u16::from_be_bytes([w[0], w[1]]);
+                        if let Some(s) = cmap.get(code) {
+                            out.push_str(s);
+                        }
+                    }
+                    return Ok(());
+                }
                 // FIXME: not sure the BOM is obligatory
                 if data.starts_with(&[0xfe, 0xff]) {
                     // FIXME: really windows not chunks!?
@@ -109,6 +160,43 @@ impl FontInfo {
             }
         }
     }
+}
+
+/// Read the `codespacerange` sections of a CMap source.
+///
+/// `<0000> <ffff>` means two-byte codes; a CMap that lists both `<00> <80>`
+/// and `<8140> <9ffc>` means variable length, decided by the value.
+fn parse_codespaces(data: &[u8]) -> Vec<(u32, u32, u8)> {
+    let text = String::from_utf8_lossy(data);
+    let mut out = Vec::new();
+    let mut inside = false;
+    let mut pending: Option<(u32, u8)> = None;
+    for tok in text.split_whitespace() {
+        match tok {
+            "begincodespacerange" => inside = true,
+            "endcodespacerange" => {
+                inside = false;
+                pending = None;
+            }
+            _ if inside && tok.starts_with('<') && tok.ends_with('>') => {
+                let hex = &tok[1..tok.len() - 1];
+                if hex.is_empty() || hex.len() % 2 != 0 || hex.len() > 8 {
+                    continue;
+                }
+                let Ok(v) = u32::from_str_radix(hex, 16) else {
+                    continue;
+                };
+                let bytes = (hex.len() / 2) as u8;
+                match pending.take() {
+                    None => pending = Some((v, bytes)),
+                    Some((lo, blen)) if blen == bytes => out.push((lo, v, blen)),
+                    Some(_) => pending = Some((v, bytes)),
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 struct FontCache<'src, T: Resolve> {
@@ -153,6 +241,13 @@ impl<'src, T: Resolve> FontCache<'src, T> {
     }
 
     fn add_font(&mut self, name: impl Into<Name>, font: &Font, resolve: &'src T) {
+        let name: Name = name.into();
+        let codespaces = font
+            .to_unicode
+            .as_ref()
+            .and_then(|s| (**s).data(resolve).ok())
+            .map(|d| parse_codespaces(&d))
+            .unwrap_or_default();
         let decoder = match font.to_unicode(resolve) {
             Some(Ok(cmap)) => Decoder::Cmap(cmap),
             Some(Err(err)) => {
@@ -203,6 +298,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
                 decoder,
                 widths,
                 two_byte,
+                codespaces,
             }),
         );
     }
